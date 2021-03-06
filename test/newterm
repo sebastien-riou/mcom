@@ -1,0 +1,18 @@
+#!/bin/bash
+
+if [ -z "$1" ]
+then
+    cmd=pwd
+else
+    cmd=$*
+fi
+
+if [ $OS_IS_LINUX -ne 0 ]
+then
+    #x-terminal-emulator -e "bash -c '$cmd;$SHELL'"
+    #xterm -e "bash -c '$cmd;$SHELL'"
+    #gnome-terminal -e "bash -c '$cmd;$SHELL'"
+    gnome-terminal -- bash --norc -ic "$cmd; exec bash;"
+else
+    start bash -c "$cmd;$SHELL"
+fi

@@ -1,0 +1,6 @@
+#!/bin/bash
+
+export PYTHON=python3
+export OS_IS_LINUX=1
+./newterm $PYTHON mcom_test.py device $*
+$PYTHON mcom_test.py host $*
