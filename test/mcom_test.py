@@ -44,14 +44,16 @@ refdatle = bytearray()
 for i in range(0,(1<<16)+1):
     refdatle.append((i & 0xFF) ^ 0xFF)
 
-device_rx_buf_size = 8
-device_tx_buf_size = 8
-
-host_rx_buf_size = 8
-host_tx_buf_size = 8
+device_rx_buf_size = 12
+device_tx_buf_size = 12
+host_rx_buf_size   = 12
+host_tx_buf_size   = 12
 
 first_test_message="hello world".encode('utf-8')
 
+max_frame = 100
+host_rx_cnt=0
+host_tx_cnt=0
 if sys.argv[1]=='device':
     serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     serversocket.settimeout(None)
@@ -73,11 +75,23 @@ if sys.argv[1]=='device':
     device.start_com()
     print("Device init done")
 
+    device_tx_frame_cnt=0
+    device_rx_frame_cnt=0
     def spy_frame_tx(data):
-        print("DEVICE FRAME TX:",mcom.Utils.hexstr(data))
+        global device_tx_frame_cnt
+        #print(time.time(),end=" ")
+        print("DEVICE FRAME TX:",mcom.Utils.hexstr(data),end=", ")
+        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        device_tx_frame_cnt+=1
+        assert(device_tx_frame_cnt<max_frame)
 
     def spy_frame_rx(data):
-        print("DEVICE FRAME RX:",mcom.Utils.hexstr(data))
+        global device_rx_frame_cnt
+        #print(time.time(),end=" ")
+        print("DEVICE FRAME RX:",mcom.Utils.hexstr(data),end=", ")
+        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        device_rx_frame_cnt+=1
+        assert(device_rx_frame_cnt<max_frame)
 
     device.spy_frame_tx = spy_frame_tx
     device.spy_frame_rx = spy_frame_rx
@@ -87,6 +101,7 @@ if sys.argv[1]=='device':
     chan=1
     dat = device.rx(channel=chan,length=len(first_test_message))
     print("device rx:",dat)
+    #time.sleep(1)
     device.tx(channel=chan,data=dat)
 
     time.sleep(.5)
@@ -104,13 +119,28 @@ else:
     host_com = mcom.SocketComDriver(link)
     host = mcom.MCom(is_host=True,com_driver=host_com)
 
+    host_tx_frame_cnt=0
+    host_rx_frame_cnt=0
+
     def spy_frame_tx(data):
-        print("HOST FRAME TX:",mcom.Utils.hexstr(data))
-        #print(mcom.MCom.Frame.from_bytes(data))
+        global host_tx_frame_cnt
+        global host_tx_cnt
+        #print(time.time(),end=" ")
+        print("HOST FRAME TX:",mcom.Utils.hexstr(data),end=", ")
+        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        host_tx_cnt += len(data)
+        host_tx_frame_cnt+=1
+        assert(host_tx_frame_cnt<max_frame)
 
     def spy_frame_rx(data):
-        print("HOST FRAME RX:",mcom.Utils.hexstr(data))
-        #print(mcom.MCom.Frame.from_bytes(data))
+        global host_rx_frame_cnt
+        global host_rx_cnt
+        #print(time.time(),end=" ")
+        print("HOST FRAME RX:",mcom.Utils.hexstr(data),end=", ")
+        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        host_rx_cnt += len(data)
+        host_rx_frame_cnt+=1
+        assert(host_rx_frame_cnt<max_frame)
 
     host.spy_frame_tx = spy_frame_tx
     host.spy_frame_rx = spy_frame_rx
@@ -131,5 +161,7 @@ else:
 
     time.sleep(.5)
     host.close_connection()
+    print("host_tx_cnt = %d"%host_tx_cnt)
+    print("host_rx_cnt = %d"%host_rx_cnt)
     print("done", flush=True)
     #input("Press enter to quit ")

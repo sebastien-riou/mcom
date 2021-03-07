@@ -295,7 +295,7 @@ class MCom(object):
 
     def rx_worker(self):
         while(True):
-            #print("rx_worker: wait for new frame")
+            #print("rx_worker: wait for new frame",flush=True)
             rx_frame = self.__frame_rx()
             if 0 == rx_frame.channel:
                 ackchannum = rx_frame.ackchan
@@ -319,22 +319,43 @@ class MCom(object):
         #loop until get_queue returns "None" so this loop can be exited using self._tx_pool.put(None)
         for q in iter(self._tx_pool.get_queue, None):
             chan = q.id
-            #print("tx_worker: chan.num=%d"%chan.num)
+            #print("tx_worker: chan.num=%d"%chan.num,flush=True)
             if 0 == chan.num:
                 #here the data is fully formated frames
                 framebytes = chan._get_from_tx_buf(length=MCom.Frame.DATA_UNIT_SIZE())
                 #print("tx_worker: ",framebytes)
                 self.__frame_tx(framebytes)
-            else:
+                frame = MCom.Frame.from_bytes(framebytes)
+                chan_num = frame.ackchan
+                chan = self._channels[chan_num]
+                #print("tx_worker: set ack_done for %d"%chan_num,flush=True)
+                chan.ack_done=True
                 if chan.rx_stalled:
                     free_size = chan._rx_free_size()
+                    #print("tx_worker: free_size %d"%free_size,flush=True)
                     if free_size > 0:
+                        #print("tx_worker: send resume frame %d"%chan.num,flush=True)
                         resume_frame = MCom.ResumeFrame(ackchan=chan.num,buf_level=free_size)
+                        chan.rx_stalled = False
                         self.__frame_tx(resume_frame)
+            else:
+                if chan.rx_stalled:
+                    if chan.ack_done:
+                        free_size = chan._rx_free_size()
+                        if free_size > 0:
+                            resume_frame = MCom.ResumeFrame(ackchan=chan.num,buf_level=free_size)
+                            chan.rx_stalled = False
+                            self.__frame_tx(resume_frame)
+                    #else:
+                    #    print("tx_worker: received resume frame notification before ack_done for %d"%chan.num)
+
+
                 if chan._has_tx():
                     frame = MCom.Frame(chan=chan.num,data=chan._get_from_tx_buf())
                     self.__frame_tx(frame)
-            #print("tx_worker: wait for new queue")
+                #else:
+                #    print("tx_worker: has_tx returned false",flush=True)
+            #print("tx_worker: wait for new queue",flush=True)
 
 
     def close_connection(self):
@@ -398,7 +419,6 @@ class MCom(object):
             self._spy_frame_tx(dat)
 
         self._com.tx(dat)
-        #print("__frame_tx done",flush=True)
 
     def __frame_rx(self):
         """receive a complete frame"""
@@ -513,12 +533,17 @@ class Channel(object):
         self.tx_buf = Channel.Buf(tx_buf_size,has_tx_buf=True)
         self.tx_max_bytes = MCom.Frame.MAX_DATA_SIZE()
         self.rx_stalled = False
+        self.ack_done = False
 
     def rx(self,length: int=1):
-        return self.rx_buf.get(length)
+        out = self.rx_buf.get(length)
+        if self.rx_stalled and len(out) > 0:
+            #print("RX exit from stalled condition",flush=True)
+            self.tx_buf.buf.put_empty() #notify tx thread to send the Resume frame
+        return out
 
     def _add_to_rx_buf(self,dat: bytearray):
-        print("_add_to_rx_buf: ",dat)
+        #print("_add_to_rx_buf: ",dat)
         cnt = self.rx_buf.put(dat)
         all = len(dat)
         if cnt < all:
@@ -526,7 +551,12 @@ class Channel(object):
             #print("RX stalled %d"%cnt)
             return -cnt # return the number of bytes accepted, inversed
         out = self.rx_buf.free_size() # return remaining number of bytes that can be accepted
-        #print("RX not stalled %d"%out)
+        if 0 == out:
+            self.rx_stalled = True
+        #    print("RX stalled 0",flush=True)
+        #else:
+        #    print("RX not stalled %d"%out)
+
         return out
 
     def _rx_free_size(self):
@@ -540,11 +570,15 @@ class Channel(object):
 
     def _has_tx(self):
         if self.tx_max_bytes is None:
+            #print("chan %d has_tx force to false"%self.num)
             return False
         return self.tx_buf.data_size() > 0
 
     def tx(self,dat, block=True, timeout=None):
-        return self.tx_buf.put(dat, block, timeout)
+        self.ack_done=False
+        out = self.tx_buf.put(dat, block, timeout)
+        #print("chan %d tx lock released"%self.num,flush=True)
+        return out
 
     def _get_from_tx_buf(self,*,length = None):
         if length is None:
@@ -562,6 +596,7 @@ class Channel(object):
             self.tx_buf.partial_ack(-length)
 
     def _resume_tx(self,length: int):
+        #print("resume_tx %d"%length)
         self.tx_max_bytes = length
         self.tx_buf.buf.put_empty() #notify tx_worker that it shall send ResumeFrame
 
