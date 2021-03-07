@@ -76,6 +76,7 @@ if sys.argv[1]=='device':
     device.tx(channel=chan,data=dat)
 
     time.sleep(1)
+    device.close_connection()
     print("device done")
     exit()
 
@@ -110,5 +111,6 @@ else:
     print(response.decode('utf-8'), flush=True)
 
     time.sleep(1)
+    host.close_connection()
     print("done", flush=True)
     #input("Press enter to quit ")

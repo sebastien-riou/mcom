@@ -100,8 +100,10 @@ class MCom(object):
         self._rx_pool = mcom.mqueue.MQueuePool()
         self.open_channel(name="ctrl",num=0,rx_buf_size=4, tx_buf_size=4, description="link control channel"  )
         self._rx_thread = threading.Thread(target=self.rx_worker, args=[])
+        self._rx_thread.daemon = True
         self._rx_thread.start()
         self._tx_thread = threading.Thread(target=self.tx_worker, args=[])
+        self._tx_thread.daemon = True
         self._tx_thread.start()
 
     def open_channel(self,*,name: str,num: int,rx_buf_size: int,tx_buf_size:int,description: str=""):
@@ -303,6 +305,9 @@ class MCom(object):
                     frame = MCom.Frame(chan=chan.num,data=chan._get_from_tx_buf())
                     self.__frame_tx(frame)
 
+    def close_connection(self):
+        self._tx_pool.put(None)
+
     def tx(self,*,channel: int, data: bytes):
         """Transmit
 
@@ -392,25 +397,30 @@ class Channel(object):
     """
 
     class Buf(object):
-        def __init__(self,size: int):
+        def __init__(self,size: int,*,has_tx_buf=False):
             self.size = size
             self.cnt = 0
             self.buf = MQueue(size)
-            self.tx_buf = bytearray()
+            self.has_tx_buf = has_tx_buf
+            if self.has_tx_buf:
+                self.tx_buf = bytearray()
 
         def get(self,length: int=1):
-            base = len(self.tx_buf)
             cnt = length
+            out = bytearray()
             try:
                 while cnt > 0:
                     dat = self.buf.get_nowait()
-                    self.tx_buf.append(dat)
+                    out.append(dat)
                     self.cnt -= 1
                     assert(self.cnt >= 0)
                     cnt -= 1
             except Empty as e:
                 pass
-            out = self.tx_buf[base:base+length]
+            if self.has_tx_buf:
+                base = len(self.tx_buf)
+                self.tx_buf += out
+                out = self.tx_buf[base:base+length]
             return out
 
         def full_ack(self):
@@ -460,7 +470,7 @@ class Channel(object):
         self.num = num
         self.description = description
         self.rx_buf = Channel.Buf(rx_buf_size)
-        self.tx_buf = Channel.Buf(tx_buf_size)
+        self.tx_buf = Channel.Buf(tx_buf_size,has_tx_buf=True)
         self.tx_max_bytes = MCom.Frame.MAX_DATA_SIZE()
         self.rx_stalled = False
 
