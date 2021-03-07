@@ -44,6 +44,14 @@ refdatle = bytearray()
 for i in range(0,(1<<16)+1):
     refdatle.append((i & 0xFF) ^ 0xFF)
 
+device_rx_buf_size = 8
+device_tx_buf_size = 8
+
+host_rx_buf_size = 8
+host_tx_buf_size = 8
+
+first_test_message="hello world".encode('utf-8')
+
 if sys.argv[1]=='device':
     serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     serversocket.settimeout(None)
@@ -58,8 +66,12 @@ if sys.argv[1]=='device':
 
     print("Device connected")
     device  = mcom.MCom(is_host=False,com_driver=device_com)
+    device.open_channel(name="test1",num=1,
+        rx_buf_size=device_rx_buf_size,
+        tx_buf_size=device_tx_buf_size,
+        description="channel test1 description (device side)"  )
+    device.start_com()
     print("Device init done")
-    device.open_channel(name="test1",num=1,rx_buf_size=32, tx_buf_size=32, description="channel test1 description (device side)"  )
 
     def spy_frame_tx(data):
         print("DEVICE FRAME TX:",mcom.Utils.hexstr(data))
@@ -70,12 +82,14 @@ if sys.argv[1]=='device':
     device.spy_frame_tx = spy_frame_tx
     device.spy_frame_rx = spy_frame_rx
 
-    dat,chan = device.rx(length=1)
-    dat += device.rx(channel=chan,length=1024,block=False)
+    #dat,chan = device.rx(length=1)
+    #dat += device.rx(channel=chan,length=1024,block=False)
+    chan=1
+    dat = device.rx(channel=chan,length=len(first_test_message))
     print("device rx:",dat)
     device.tx(channel=chan,data=dat)
 
-    time.sleep(1)
+    time.sleep(.5)
     device.close_connection()
     print("device done")
     exit()
@@ -92,17 +106,22 @@ else:
 
     def spy_frame_tx(data):
         print("HOST FRAME TX:",mcom.Utils.hexstr(data))
+        #print(mcom.MCom.Frame.from_bytes(data))
 
     def spy_frame_rx(data):
         print("HOST FRAME RX:",mcom.Utils.hexstr(data))
+        #print(mcom.MCom.Frame.from_bytes(data))
 
     host.spy_frame_tx = spy_frame_tx
     host.spy_frame_rx = spy_frame_rx
 
     chan=1
-    host.open_channel(name="test1",num=1,rx_buf_size=32, tx_buf_size=32, description="channel test1 description (host side)"  )
-    time.sleep(1)
-    dat="hello world".encode('utf-8')
+    host.open_channel(name="test1",num=1,
+        rx_buf_size=host_rx_buf_size,
+        tx_buf_size=host_tx_buf_size,
+        description="channel test1 description (host side)"  )
+    host.start_com()
+    dat=first_test_message
     print("sending: ",dat)
     host.tx(channel=chan,data=dat)
     print("receiving:")
@@ -110,7 +129,7 @@ else:
     print(response, flush=True)
     print(response.decode('utf-8'), flush=True)
 
-    time.sleep(1)
+    time.sleep(.5)
     host.close_connection()
     print("done", flush=True)
     #input("Press enter to quit ")

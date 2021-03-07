@@ -63,7 +63,10 @@ class MQueue(Queue):
         (except for potential low-level errors such as failure to allocate memory).
         The optional args block and timeout are ignored and only provided for
         compatibility with Queue.put()."""
-        self.put_nowait(item)
+        super().put(item,block,timeout)
+        if self._pool is None:
+            return
+        self._pool.put(self)
 
     def put_nowait(self, item):
         """Equivalent to put(item),

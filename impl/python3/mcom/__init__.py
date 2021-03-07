@@ -41,7 +41,7 @@ __copyright__ = ''
 
 
 import io
-from queue import SimpleQueue, Empty
+from queue import SimpleQueue, Empty, Full
 import select
 import threading
 import mcom.mqueue
@@ -100,10 +100,13 @@ class MCom(object):
         self._rx_pool = mcom.mqueue.MQueuePool()
         self.open_channel(name="ctrl",num=0,rx_buf_size=4, tx_buf_size=4, description="link control channel"  )
         self._rx_thread = threading.Thread(target=self.rx_worker, args=[])
-        self._rx_thread.daemon = True
-        self._rx_thread.start()
         self._tx_thread = threading.Thread(target=self.tx_worker, args=[])
+
+    def start_com(self):
+        assert(not self._rx_thread.is_alive()) #start must be called at most once per thread object.
+        self._rx_thread.daemon = True
         self._tx_thread.daemon = True
+        self._rx_thread.start()
         self._tx_thread.start()
 
     def open_channel(self,*,name: str,num: int,rx_buf_size: int,tx_buf_size:int,description: str=""):
@@ -172,7 +175,7 @@ class MCom(object):
             self._bytes += byte0.to_bytes(1,byteorder='little')
             if large_frame_size_field >= 0:
                 self._bytes += large_frame_size_field.to_bytes(1,byteorder='little')
-                self._bytes += data
+            self._bytes += data
             self._padlen = len(self._bytes) % MCom.Frame.DATA_UNIT_SIZE()
             if self._padlen:
                 self._padlen = MCom.Frame.DATA_UNIT_SIZE() - self._padlen
@@ -187,23 +190,35 @@ class MCom(object):
             chan = byte0 & 0x3F
             is_large = 0 == small_frame_size
             if is_large:
-                #data_size = len(frame) - Frame.LARGE_FRAME_HEADER_SIZE
                 data = frame[MCom.Frame.LARGE_FRAME_HEADER_SIZE():]
             else:
-                #data_size = len(frame) - Frame.SMALL_FRAME_HEADER_SIZE
                 data = frame[MCom.Frame.SMALL_FRAME_HEADER_SIZE():]
             if 0 == chan:
                 assert(not is_large)
+                #print("from_bytes: data[0]=%x"%data[0])
                 if data[0] == MCom.AckFrame.INS:
                     return MCom.AckFrame.from_bytes(frame)
                 if data[0] == MCom.ResumeFrame.INS:
                     return MCom.ResumeFrame.from_bytes(frame)
                 raise Exception("unknown frame type received on channel 0:",frame)
-            print("data=",data)
+            else:
+                if is_large:
+                    size = frame[1] + MCom.Frame.LARGE_FRAME_MIN_DATA_SIZE()
+                else:
+                    size = small_frame_size
+                data = data[0:size]
+
+            #print("data=",data)
             fo = MCom.Frame(chan=chan,data=data)
-            print("fo.bytes",fo.bytes)
-            print("fo.data",fo.data)
+            #print("fo.bytes",fo.bytes)
+            #print("fo.data",fo.data)
             return fo
+
+        def __str__(self):
+            out = "%s:"%type(self).__name__
+            out += "chan=%d,"%self._chan
+            out += "data_size=%d"%self._data_size
+            return out
 
         @property
         def bytes(self):
@@ -228,8 +243,10 @@ class MCom(object):
         @property
         def data(self):
             if self.is_large:
-                return self._bytes[self.LARGE_FRAME_HEADER_SIZE():]
-            return self._bytes[self.SMALL_FRAME_HEADER_SIZE():]
+                base = self.LARGE_FRAME_HEADER_SIZE()
+            else:
+                base = self.SMALL_FRAME_HEADER_SIZE()
+            return self._bytes[base:base+self._data_size]
 
         @property
         def channel(self):
@@ -251,13 +268,21 @@ class MCom(object):
             self._ackchan = ackchan
             self._buf_level = buf_level
             buf_level = (buf_level<<6) | ackchan
-            data = buf_level.to_bytes(2,byteorder='little',signed=True)
+            data = bytearray([self.INS])
+            data += buf_level.to_bytes(2,byteorder='little',signed=True)
+            #print("AckFrame.__init__: data=",data)
             super().__init__(chan=0,data=data)
+
+        def __str__(self):
+            out = "%s:"%type(self).__name__
+            out += "ackchan=%d,"%self._ackchan
+            out += "buf_level=%d"%self._buf_level
+            return out
 
         @classmethod
         def from_bytes(cls,frame):
             assert(len(frame)==MCom.Frame.DATA_UNIT_SIZE())
-            assert(frame[0]==0x80)
+            assert(frame[0]==0xC0)
             assert(frame[1]==cls.INS)
             buf_level = int.from_bytes(frame[2:],byteorder='little',signed=True)
             ackchan = buf_level & 0x3F
@@ -270,6 +295,7 @@ class MCom(object):
 
     def rx_worker(self):
         while(True):
+            #print("rx_worker: wait for new frame")
             rx_frame = self.__frame_rx()
             if 0 == rx_frame.channel:
                 ackchannum = rx_frame.ackchan
@@ -282,18 +308,22 @@ class MCom(object):
                     raise Exception("Unexpected frame type on channel 0:",rx_frame.INS)
             else:
                 chan = self._channels[rx_frame.channel]
+                #print("rx_worker: rx_frame.channel=%d, chan.num=%d"%(rx_frame.channel,chan.num))
                 buf_level = chan._add_to_rx_buf(rx_frame.data)
                 ack_frame = MCom.AckFrame(ackchan=chan.num,buf_level=buf_level)
+                #print("rx_worker: %s"%ack_frame)
+                #print("rx_worker: %s"%ack_frame.bytes)
                 self._channels[0].tx(ack_frame.bytes)
 
     def tx_worker(self):
         #loop until get_queue returns "None" so this loop can be exited using self._tx_pool.put(None)
         for q in iter(self._tx_pool.get_queue, None):
             chan = q.id
-            print("tx_worker: chan.num=%d"%chan.num)
+            #print("tx_worker: chan.num=%d"%chan.num)
             if 0 == chan.num:
                 #here the data is fully formated frames
-                framebytes = chan._get_from_tx_buf()
+                framebytes = chan._get_from_tx_buf(length=MCom.Frame.DATA_UNIT_SIZE())
+                #print("tx_worker: ",framebytes)
                 self.__frame_tx(framebytes)
             else:
                 if chan.rx_stalled:
@@ -304,18 +334,22 @@ class MCom(object):
                 if chan._has_tx():
                     frame = MCom.Frame(chan=chan.num,data=chan._get_from_tx_buf())
                     self.__frame_tx(frame)
+            #print("tx_worker: wait for new queue")
+
 
     def close_connection(self):
         self._tx_pool.put(None)
 
-    def tx(self,*,channel: int, data: bytes):
+    def tx(self,*,channel: int, data: bytes, block=True, timeout=None):
         """Transmit
 
         Args:
             channel: :class:`Channel` number.
             data: bytes to send
+        Returns:
+            number of bytes actually sent (may be smaller than data size when block=False)
         """
-        self._channels[channel].tx(data)
+        return self._channels[channel].tx(data,block,timeout)
 
     def rx(self,*,channel: int=None, length: int=1, block=True):
         """Receive at most `length` bytes on `channel`
@@ -344,6 +378,7 @@ class MCom(object):
             out = bytearray()
             while len(out) < length:
                 dat, channel = core(channel,length,block)
+                #print("rx.core returned ",dat)
                 out += dat
         else:
             out, channel = core(channel,length,block)
@@ -406,6 +441,7 @@ class Channel(object):
                 self.tx_buf = bytearray()
 
         def get(self,length: int=1):
+            assert(length is not None)
             cnt = length
             out = bytearray()
             try:
@@ -425,20 +461,24 @@ class Channel(object):
 
         def full_ack(self):
             self.tx_buf = bytearray()
+            if self.cnt:
+                self.buf.put_empty() #wake up tx thread
 
         def partial_ack(self,length: int):
             self.tx_buf = self.tx_buf[length:]
 
-        def put(self,dat: bytearray):
+        def put(self,dat: bytearray, block=True, timeout=None):
             cnt = 0
             try:
                 for i in dat:
-                    self.buf.put_nowait(i)
+                    self.buf.put(i,block, timeout)
                     self.cnt += 1
-                    assert(self.cnt <= self.size)
+                    #assert(self.cnt <= self.size)
                     cnt += 1
-            except queue.Full as e:
+            except Full as e:
+                assert(not block)
                 pass
+            #print("Buf.put returns %d",cnt)
             return cnt
 
         def free_size(self):
@@ -478,12 +518,16 @@ class Channel(object):
         return self.rx_buf.get(length)
 
     def _add_to_rx_buf(self,dat: bytearray):
+        print("_add_to_rx_buf: ",dat)
         cnt = self.rx_buf.put(dat)
         all = len(dat)
         if cnt < all:
             self.rx_stalled = True
+            #print("RX stalled %d"%cnt)
             return -cnt # return the number of bytes accepted, inversed
-        return self.rx_buf.free_size() # return remaining number of bytes that can be accepted
+        out = self.rx_buf.free_size() # return remaining number of bytes that can be accepted
+        #print("RX not stalled %d"%out)
+        return out
 
     def _rx_free_size(self):
         return self.rx_buf.free_size()
@@ -495,10 +539,12 @@ class Channel(object):
         return min(dat_size,self.tx_max_bytes)
 
     def _has_tx(self):
+        if self.tx_max_bytes is None:
+            return False
         return self.tx_buf.data_size() > 0
 
-    def tx(self,dat):
-        return self.tx_buf.put(dat)
+    def tx(self,dat, block=True, timeout=None):
+        return self.tx_buf.put(dat, block, timeout)
 
     def _get_from_tx_buf(self,*,length = None):
         if length is None:
@@ -508,9 +554,11 @@ class Channel(object):
 
     def _ack_tx(self,length: int):
         if length > 0:
-            self.tx_buf.full_ack()
+            #print("Full ACK %d"%length)
             self.tx_max_bytes = length
+            self.tx_buf.full_ack()
         else:
+            #print("Partial ACK %d"%length)
             self.tx_buf.partial_ack(-length)
 
     def _resume_tx(self,length: int):
