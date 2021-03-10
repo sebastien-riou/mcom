@@ -7,6 +7,8 @@ import os
 from threading import Thread
 import pprint
 import time
+import random
+import secrets
 
 import sys, os
 implpath = os.path.abspath(os.path.join(os.path.dirname(__file__),'..', 'impl', 'python3'))
@@ -50,6 +52,28 @@ host_rx_buf_size   = 12
 host_tx_buf_size   = 12
 
 first_test_message="hello world".encode('utf-8')
+
+
+def test_echo_sender(*,com,chan,nbytes):
+    length = com.channels[chan].tx_buf.size
+    cnt=0
+    while cnt<nbytes:
+        #dat = random.randbytes(length)
+        length = min(nbytes-cnt,length)
+        dat = secrets.token_bytes(length)
+        cnt+=len(dat)
+        com.tx(channel=chan, data=dat)
+        print("tx cnt=",cnt,flush=True)
+        echo = com.rx(channel=chan,length=length)
+        assert(dat == echo)
+
+def test_echo_receiver(*,com,chan,nbytes):
+    cnt=0
+    while cnt<nbytes:
+        dat = com.rx(channel=chan)
+        cnt+=len(dat)
+        com.tx(channel=chan,data=dat)
+
 
 max_frame = 100
 host_rx_cnt=0
@@ -104,7 +128,9 @@ if sys.argv[1]=='device':
     #time.sleep(1)
     device.tx(channel=chan,data=dat)
 
-    time.sleep(.5)
+    test_echo_receiver(com=device,chan=chan,nbytes=100)
+
+    time.sleep(.5) #TODO: seems like close_connection is not blocking, may need an explicit flush before
     device.close_connection()
     print("device done")
     exit()
@@ -158,6 +184,8 @@ else:
     response = host.rx(channel=chan,length=len(dat))
     print(response, flush=True)
     print(response.decode('utf-8'), flush=True)
+
+    test_echo_sender(com=host,chan=chan,nbytes=100)
 
     time.sleep(.5)
     host.close_connection()

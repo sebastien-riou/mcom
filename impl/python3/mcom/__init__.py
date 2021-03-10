@@ -88,6 +88,10 @@ class MCom(object):
     def spy_frame_rx(self, value):
         self._spy_frame_rx = value
 
+    @property
+    def channels(self):
+        return self._channels
+
     def __init__(self,*,is_host,com_driver):
         self._com = com_driver
         self._is_host = is_host
@@ -385,21 +389,13 @@ class MCom(object):
                 q = self._rx_pool.get_queue(block=block)
                 assert(q.id.num != 0)
                 channel = q.id.num
-                return self._channels[channel].rx(length), channel
-            elif block:
-                #blocking rx on specific channel
-                match = False
-                while not match:
-                    q = self._rx_pool.get_queue(block=block)
-                    assert(q.id.num != 0)
-                    match = channel == q.id.num
-            return self._channels[channel].rx(length), channel
+                return self._channels[channel].rx(length,block=block), channel
+            return self._channels[channel].rx(length,block=block), channel
         retchan = channel is None
         if block:
             out = bytearray()
             while len(out) < length:
                 dat, channel = core(channel,length,block)
-                #print("rx.core returned ",dat)
                 out += dat
         else:
             out, channel = core(channel,length,block)
@@ -460,18 +456,21 @@ class Channel(object):
             if self.has_tx_buf:
                 self.tx_buf = bytearray()
 
-        def get(self,length: int=1):
+        def get(self,length: int=1, block=True, timeout=None):
             assert(length is not None)
             cnt = length
             out = bytearray()
             try:
                 while cnt > 0:
-                    dat = self.buf.get_nowait()
+                    dat = self.buf.get(block,timeout)
                     out.append(dat)
                     self.cnt -= 1
                     assert(self.cnt >= 0)
                     cnt -= 1
+                    #print("channel.*buf.get: cnt=%2d, out="%cnt,out)
+
             except Empty as e:
+                assert(not block)
                 pass
             if self.has_tx_buf:
                 base = len(self.tx_buf)
@@ -535,8 +534,8 @@ class Channel(object):
         self.rx_stalled = False
         self.ack_done = False
 
-    def rx(self,length: int=1):
-        out = self.rx_buf.get(length)
+    def rx(self,length: int=1, block=True, timeout=None):
+        out = self.rx_buf.get(length, block, timeout)
         if self.rx_stalled and len(out) > 0:
             #print("RX exit from stalled condition",flush=True)
             self.tx_buf.buf.put_empty() #notify tx thread to send the Resume frame
@@ -584,7 +583,7 @@ class Channel(object):
         if length is None:
             length = self.tx_max_bytes
         self.tx_max_bytes = None # we gave some data, now wait for a acknowledge
-        return self.tx_buf.get(length)
+        return self.tx_buf.get(length,block=False)
 
     def _ack_tx(self,length: int):
         if length > 0:
