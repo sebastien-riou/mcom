@@ -116,6 +116,10 @@ class MCom(object):
 
     def open_channel(self,*,name: str,num: int,rx_buf_size: int,tx_buf_size:int,description: str=""):
         assert(num not in self._channels)
+        if rx_buf_size:
+            assert(rx_buf_size >= 4)
+        if tx_buf_size:
+            assert(tx_buf_size >= 4)
         args = locals()
         del args["self"]
         chan = Channel(**args)
@@ -291,7 +295,7 @@ class MCom(object):
         @classmethod
         def from_bytes(cls,frame):
             assert(len(frame)==MCom.Frame.DATA_UNIT_SIZE())
-            print(mcom.Utils.hexstr(frame))
+            #print("from_bytes: ",mcom.Utils.hexstr(frame))
             assert(frame[0]==0xC0)
             assert(frame[1]==cls.INS)
             buf_level = int.from_bytes(frame[2:],byteorder='little',signed=True)

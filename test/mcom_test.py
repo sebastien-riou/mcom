@@ -4,7 +4,7 @@ import sys
 import binascii
 import io
 import os
-from threading import Thread
+from threading import Thread, Lock
 import pprint
 import time
 import random
@@ -46,10 +46,10 @@ refdatle = bytearray()
 for i in range(0,(1<<16)+1):
     refdatle.append((i & 0xFF) ^ 0xFF)
 
-device_rx_buf_size = 12
-device_tx_buf_size = 12
-host_rx_buf_size   = 12
-host_tx_buf_size   = 12
+device_rx_buf_size = 16
+device_tx_buf_size = 16
+host_rx_buf_size   = 16
+host_tx_buf_size   = 16
 
 first_test_message="hello world".encode('utf-8')
 
@@ -63,7 +63,7 @@ def test_echo_sender(*,com,chan,nbytes):
         dat = secrets.token_bytes(length)
         cnt+=len(dat)
         com.tx(channel=chan, data=dat)
-        print("tx cnt=",cnt,flush=True)
+        #print("tx cnt=",cnt,flush=True)
         echo = com.rx(channel=chan,length=length)
         assert(dat == echo)
 
@@ -74,8 +74,9 @@ def test_echo_receiver(*,com,chan,nbytes):
         cnt+=len(dat)
         com.tx(channel=chan,data=dat)
 
+printlock = Lock()
 
-max_frame = 100
+max_frame = 1000
 host_rx_cnt=0
 host_tx_cnt=0
 if sys.argv[1]=='device':
@@ -115,17 +116,19 @@ if sys.argv[1]=='device':
     device_rx_frame_cnt=0
     def spy_frame_tx(data):
         global device_tx_frame_cnt
-        #print(time.time(),end=" ")
-        print("DEVICE FRAME TX:",mcom.Utils.hexstr(data),end=", ")
-        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        with printlock:
+            #print(time.time(),end=" ")
+            print("DEVICE FRAME TX:",mcom.Utils.hexstr(data),end=", ")
+            print(mcom.MCom.Frame.from_bytes(data),flush=True)
         device_tx_frame_cnt+=1
         assert(device_tx_frame_cnt<max_frame)
 
     def spy_frame_rx(data):
         global device_rx_frame_cnt
-        #print(time.time(),end=" ")
-        print("DEVICE FRAME RX:",mcom.Utils.hexstr(data),end=", ")
-        print(mcom.MCom.Frame.from_bytes(data),flush=True)
+        with printlock:
+            #print(time.time(),end=" ")
+            print("DEVICE FRAME RX:",mcom.Utils.hexstr(data),end=", ")
+            print(mcom.MCom.Frame.from_bytes(data),flush=True)
         device_rx_frame_cnt+=1
         assert(device_rx_frame_cnt<max_frame)
 
