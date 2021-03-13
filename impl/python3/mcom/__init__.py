@@ -100,6 +100,7 @@ class MCom(object):
         self._channels = {}
         self._last_tx_chan = 1
         self._last_resume_chan = 1
+        self._chan0_res_event = threading.Event()
         self._tx_pool = mcom.mqueue.MQueuePool()
         self._rx_pool = mcom.mqueue.MQueuePool()
         self.open_channel(name="ctrl",num=0,rx_buf_size=4, tx_buf_size=4, description="link control channel"  )
@@ -198,13 +199,17 @@ class MCom(object):
             else:
                 data = frame[MCom.Frame.SMALL_FRAME_HEADER_SIZE():]
             if 0 == chan:
-                assert(not is_large)
+                #assert(not is_large)
                 #print("from_bytes: data[0]=%x"%data[0])
                 if data[0] == MCom.AckFrame.INS:
                     return MCom.AckFrame.from_bytes(frame)
                 if data[0] == MCom.ResumeFrame.INS:
                     return MCom.ResumeFrame.from_bytes(frame)
-                raise Exception("unknown frame type received on channel 0:",frame)
+                if data[0] == MCom.ChanListReqFrame.INS:
+                    return MCom.ChanListReqFrame.from_bytes(frame)
+                if data[0] == MCom.ChanListFrame.INS:
+                    return MCom.ChanListFrame.from_bytes(frame)
+                raise Exception("unknown frame type received on channel 0:",mcom.Utils.hexstr(frame))
             else:
                 if is_large:
                     size = frame[1] + MCom.Frame.LARGE_FRAME_MIN_DATA_SIZE()
@@ -286,6 +291,7 @@ class MCom(object):
         @classmethod
         def from_bytes(cls,frame):
             assert(len(frame)==MCom.Frame.DATA_UNIT_SIZE())
+            print(mcom.Utils.hexstr(frame))
             assert(frame[0]==0xC0)
             assert(frame[1]==cls.INS)
             buf_level = int.from_bytes(frame[2:],byteorder='little',signed=True)
@@ -297,19 +303,88 @@ class MCom(object):
         INS = 0x01
         """byte: identifier of RESUME frames"""
 
+    class ChanListReqFrame(Frame):
+        INS = 0x02
+        """byte: identifier of ChanListReq frames"""
+
+        def __init__(self):
+            data = bytearray([self.INS])
+            super().__init__(chan=0,data=data)
+
+        def __str__(self):
+            out = "%s:"%type(self).__name__
+            return out
+
+        @classmethod
+        def from_bytes(cls,frame):
+            assert(len(frame)==MCom.Frame.DATA_UNIT_SIZE())
+            assert(frame[0]==0x40)
+            assert(frame[1]==cls.INS)
+            return cls()
+
+    class ChanListFrame(Frame):
+        INS = 0x03
+        """byte: identifier of ChanList frames"""
+
+        @property
+        def open_channels_nums(self):
+            return self._open_channels_nums
+
+        def __init__(self, *, open_channels_nums):
+            self._open_channels_nums = open_channels_nums
+            data = bytearray([self.INS])
+            binlist = 0
+            for chan_num in open_channels_nums:
+                binlist |= 1 << chan_num
+            size = Utils.ceildiv(binlist.bit_length(), 8)
+            data += binlist.to_bytes(size,byteorder='little')
+            super().__init__(chan=0,data=data)
+
+        def __str__(self):
+            out = "%s:"%type(self).__name__
+            out += "open_chans=%s"%self._open_channels_nums
+            return out
+
+        @classmethod
+        def from_bytes(cls,frame):
+            #assert(len(frame)==MCom.Frame.DATA_UNIT_SIZE())
+            if frame[0] != 0:
+                #small frame
+                header_size = MCom.Frame.SMALL_FRAME_HEADER_SIZE()
+            else:
+                #large frame
+                header_size = MCom.Frame.LARGE_FRAME_HEADER_SIZE()
+            assert(frame[header_size]==cls.INS)
+            binlist = int.from_bytes(frame[header_size+1:],byteorder='little')
+            open_channels_nums = []
+            while binlist:
+                width = binlist.bit_length()
+                chan_num = width-1
+                binlist ^= 1 << chan_num
+                open_channels_nums.append(chan_num)
+            return cls(open_channels_nums = open_channels_nums)
+
     def rx_worker(self):
         while(True):
             #print("rx_worker: wait for new frame",flush=True)
             rx_frame = self.__frame_rx()
             if 0 == rx_frame.channel:
-                ackchannum = rx_frame.ackchan
-                chan = self._channels[ackchannum]
-                if rx_frame.INS == MCom.AckFrame.INS:
-                    chan._ack_tx(rx_frame.buf_level)
-                elif rx_frame.INS == MCom.ResumeFrame.INS:
-                    chan._resume_tx(rx_frame.buf_level)
+                if rx_frame.INS == MCom.ChanListReqFrame.INS:
+                    frame = MCom.ChanListFrame(open_channels_nums = self._channels.keys())
+                    self._channels[0].tx(frame.bytes)
+                    #self._tx_pool.put(self._channels[0])
+                elif rx_frame.INS == MCom.ChanListFrame.INS:
+                    self._chan_list = rx_frame.open_channels_nums
+                    self._chan0_res_event.set()
                 else:
-                    raise Exception("Unexpected frame type on channel 0:",rx_frame.INS)
+                    ackchannum = rx_frame.ackchan
+                    chan = self._channels[ackchannum]
+                    if rx_frame.INS == MCom.AckFrame.INS:
+                        chan._ack_tx(rx_frame.buf_level)
+                    elif rx_frame.INS == MCom.ResumeFrame.INS:
+                        chan._resume_tx(rx_frame.buf_level)
+                    else:
+                        raise Exception("Unexpected frame type on channel 0:",rx_frame.INS)
             else:
                 chan = self._channels[rx_frame.channel]
                 #print("rx_worker: rx_frame.channel=%d, chan.num=%d"%(rx_frame.channel,chan.num))
@@ -327,21 +402,30 @@ class MCom(object):
             if 0 == chan.num:
                 #here the data is fully formated frames
                 framebytes = chan._get_from_tx_buf(length=MCom.Frame.DATA_UNIT_SIZE())
-                #print("tx_worker: ",framebytes)
+                if 0 == len(framebytes):
+                    continue
+                length = framebytes[0] >> 6
+                if 0==length:
+                    length = framebytes[1] + MCom.Frame.LARGE_FRAME_MIN_DATA_SIZE()
+                    remaining = length - MCom.Frame.LARGE_FRAME_FIRST_DATA_UNIT_SIZE()
+                    ndu = Utils.ceildiv(remaining, MCom.Frame.DATA_UNIT_SIZE())
+                    framebytes += chan._get_from_tx_buf(length=ndu*MCom.Frame.DATA_UNIT_SIZE(), block=True)
+                #print("tx_worker: ",mcom.Utils.hexstr(framebytes))
                 self.__frame_tx(framebytes)
                 frame = MCom.Frame.from_bytes(framebytes)
-                chan_num = frame.ackchan
-                chan = self._channels[chan_num]
-                #print("tx_worker: set ack_done for %d"%chan_num,flush=True)
-                chan.ack_done=True
-                if chan.rx_stalled:
-                    free_size = chan._rx_free_size()
-                    #print("tx_worker: free_size %d"%free_size,flush=True)
-                    if free_size > 0:
-                        #print("tx_worker: send resume frame %d"%chan.num,flush=True)
-                        resume_frame = MCom.ResumeFrame(ackchan=chan.num,buf_level=free_size)
-                        chan.rx_stalled = False
-                        self.__frame_tx(resume_frame)
+                if type(frame) is MCom.AckFrame:
+                    chan_num = frame.ackchan
+                    chan = self._channels[chan_num]
+                    #print("tx_worker: set ack_done for %d"%chan_num,flush=True)
+                    chan.ack_done=True
+                    if chan.rx_stalled:
+                        free_size = chan._rx_free_size()
+                        #print("tx_worker: free_size %d"%free_size,flush=True)
+                        if free_size > 0:
+                            #print("tx_worker: send resume frame %d"%chan.num,flush=True)
+                            resume_frame = MCom.ResumeFrame(ackchan=chan.num,buf_level=free_size)
+                            chan.rx_stalled = False
+                            self.__frame_tx(resume_frame)
             else:
                 if chan.rx_stalled:
                     if chan.ack_done:
@@ -361,9 +445,16 @@ class MCom(object):
                 #    print("tx_worker: has_tx returned false",flush=True)
             #print("tx_worker: wait for new queue",flush=True)
 
-
     def close_connection(self):
         self._tx_pool.put(None)
+
+    def chan_list_req(self):
+        self._chan0_res_event.clear()
+        self._chan_list = None
+        frame = MCom.ChanListReqFrame()
+        self._channels[0].tx(frame.bytes)
+        self._chan0_res_event.wait()
+        return self._chan_list
 
     def tx(self,*,channel: int, data: bytes, block=True, timeout=None):
         """Transmit
@@ -579,11 +670,11 @@ class Channel(object):
         #print("chan %d tx lock released"%self.num,flush=True)
         return out
 
-    def _get_from_tx_buf(self,*,length = None):
+    def _get_from_tx_buf(self,*,length = None, block = False):
         if length is None:
             length = self.tx_max_bytes
         self.tx_max_bytes = None # we gave some data, now wait for a acknowledge
-        return self.tx_buf.get(length,block=False)
+        return self.tx_buf.get(length,block=block)
 
     def _ack_tx(self,length: int):
         if length > 0:

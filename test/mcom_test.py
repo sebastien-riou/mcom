@@ -96,6 +96,18 @@ if sys.argv[1]=='device':
         rx_buf_size=device_rx_buf_size,
         tx_buf_size=device_tx_buf_size,
         description="channel test1 description (device side)"  )
+    device.open_channel(name="test2",num=2,
+        rx_buf_size=device_rx_buf_size,
+        tx_buf_size=device_tx_buf_size,
+        description="channel test2 description (device side)"  )
+    device.open_channel(name="test20",num=20,
+        rx_buf_size=device_rx_buf_size,
+        tx_buf_size=device_tx_buf_size,
+        description="channel test20 description (device side)"  )
+    device.open_channel(name="test63",num=63,
+        rx_buf_size=device_rx_buf_size,
+        tx_buf_size=device_tx_buf_size,
+        description="channel test63 description (device side)"  )
     device.start_com()
     print("Device init done")
 
@@ -120,8 +132,6 @@ if sys.argv[1]=='device':
     device.spy_frame_tx = spy_frame_tx
     device.spy_frame_rx = spy_frame_rx
 
-    #dat,chan = device.rx(length=1)
-    #dat += device.rx(channel=chan,length=1024,block=False)
     chan=1
     dat = device.rx(channel=chan,length=len(first_test_message))
     print("device rx:",dat)
@@ -177,6 +187,8 @@ else:
         tx_buf_size=host_tx_buf_size,
         description="channel test1 description (host side)"  )
     host.start_com()
+    chans = host.chan_list_req()
+    print(chans)
     dat=first_test_message
     print("sending: ",dat)
     host.tx(channel=chan,data=dat)
