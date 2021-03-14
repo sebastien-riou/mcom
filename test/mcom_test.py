@@ -46,13 +46,13 @@ refdatle = bytearray()
 for i in range(0,(1<<16)+1):
     refdatle.append((i & 0xFF) ^ 0xFF)
 
-device_rx_buf_size = 16
-device_tx_buf_size = 16
-host_rx_buf_size   = 16
-host_tx_buf_size   = 16
+device_rx_buf_size = 256
+device_tx_buf_size = 256
+host_rx_buf_size   = 256
+host_tx_buf_size   = 256
 
 first_test_message="hello world".encode('utf-8')
-
+large_dat = refdat
 
 def test_echo_sender(*,com,chan,nbytes):
     length = com.channels[chan].tx_buf.size
@@ -76,7 +76,7 @@ def test_echo_receiver(*,com,chan,nbytes):
 
 printlock = Lock()
 
-max_frame = 1000
+max_frame = 10000
 host_rx_cnt=0
 host_tx_cnt=0
 if sys.argv[1]=='device':
@@ -143,6 +143,11 @@ if sys.argv[1]=='device':
 
     test_echo_receiver(com=device,chan=chan,nbytes=100)
 
+    dat = device.rx(channel=chan,length=len(large_dat))
+    print("received %d bytes"%len(dat))
+    assert(dat == large_dat)
+    device.tx(channel=chan,data=dat)
+
     time.sleep(.5) #TODO: seems like close_connection is not blocking, may need an explicit flush before
     device.close_connection()
     print("device done")
@@ -201,6 +206,13 @@ else:
     print(response.decode('utf-8'), flush=True)
 
     test_echo_sender(com=host,chan=chan,nbytes=100)
+
+    dat=large_dat
+    host.tx(channel=chan,data=dat)
+    print("sent %d bytes"%len(dat))
+    response = host.rx(channel=chan,length=len(dat))
+    print("received %d bytes"%len(response))
+    assert(response == dat)
 
     time.sleep(.5)
     host.close_connection()
